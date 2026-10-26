@@ -402,7 +402,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
     } catch (err) {
       if (err instanceof CircuitOpenError) {
         // The wait was aborted because the circuit opened
-        this.metrics?.recordBlockedRequest({ breakerId: this.id });
+        this.recordBlockedRequest();
       }
       throw err;
     } finally {
@@ -419,10 +419,14 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
   private throwIfCircuitOpen(): void {
     if (this.state === CircuitState.OPEN) {
-      this.metrics?.recordBlockedRequest({ breakerId: this.id });
+      this.recordBlockedRequest();
 
       throw new CircuitOpenError(this.id);
     }
+  }
+
+  private recordBlockedRequest(): void {
+    this.metrics?.recordBlockedRequest({ breakerId: this.id });
   }
 
   private async runCall<T>(fn: () => Promise<T>): Promise<T> {
