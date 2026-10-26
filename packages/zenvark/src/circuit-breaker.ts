@@ -1,3 +1,4 @@
+import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Redis } from 'ioredis';
 import type { AdaptiveSemaphore, Lease } from './adaptive-semaphore.ts';
 import type { BackoffStrategy } from './backoffs/backoff-strategy.ts';
@@ -17,6 +18,9 @@ import { CircuitStateStore } from './stores/circuit-state-store.ts';
 import type { CallResultEvent } from './types.ts';
 import { AbstractLifecycleManager } from './utils/abstract-lifecycle-manager.ts';
 import { HealthCheckManager } from './utils/health-check-manager.ts';
+
+// No-op unless the application registers an OpenTelemetry SDK
+const tracer = trace.getTracer('zenvark');
 
 type HealthConfig = {
   backoff: BackoffStrategy;
@@ -134,6 +138,15 @@ export class CircuitBreaker extends AbstractLifecycleManager {
       onStateChange: (state) => {
         if (this.elector.isLeader) {
           this.metrics?.recordStateChange?.({ breakerId: this.id, state });
+          tracer
+            .startSpan('zenvark.state_change', {
+              root: true,
+              attributes: {
+                'zenvark.breaker.id': this.id,
+                'zenvark.circuit.state': state,
+              },
+            })
+            .end();
         }
         if (state === CircuitState.OPEN) {
           this.abortPendingLeaseAcquires();
@@ -185,43 +198,67 @@ export class CircuitBreaker extends AbstractLifecycleManager {
     });
 
     this.healthCheckManager = new HealthCheckManager({
-      runCheck: async (type, signal) => {
-        const startedAt = performance.now();
+      runCheck: (type, signal) =>
+        tracer.startActiveSpan(
+          'zenvark.healthcheck',
+          {
+            root: true,
+            kind: SpanKind.CLIENT,
+            attributes: {
+              'zenvark.breaker.id': this.id,
+              'zenvark.healthcheck.type': type,
+            },
+          },
+          async (span) => {
+            const startedAt = performance.now();
 
-        try {
-          await this.health.check(type, signal);
+            try {
+              await this.health.check(type, signal);
+              span.setAttribute(
+                'zenvark.healthcheck.result',
+                CallResult.SUCCESS,
+              );
 
-          if (this.metrics) {
-            const durationMs = performance.now() - startedAt;
-            this.metrics.recordHealthCheck({
-              breakerId: this.id,
-              type,
-              result: CallResult.SUCCESS,
-              durationMs,
-            });
-          }
+              if (this.metrics) {
+                const durationMs = performance.now() - startedAt;
+                this.metrics.recordHealthCheck({
+                  breakerId: this.id,
+                  type,
+                  result: CallResult.SUCCESS,
+                  durationMs,
+                });
+              }
 
-          void this.onHealthCheckSuccess(type);
-        } catch (err) {
-          if (signal.aborted) {
-            return;
-          }
+              void this.onHealthCheckSuccess(type);
+            } catch (err) {
+              if (signal.aborted) {
+                return;
+              }
 
-          if (this.metrics) {
-            const durationMs = performance.now() - startedAt;
-            this.metrics.recordHealthCheck({
-              breakerId: this.id,
-              type,
-              result: CallResult.FAILURE,
-              durationMs,
-            });
-          }
+              span.setAttribute(
+                'zenvark.healthcheck.result',
+                CallResult.FAILURE,
+              );
+              span.setStatus({ code: SpanStatusCode.ERROR });
 
-          this.handleError(`Failed to perform ${type} health check`, err);
+              if (this.metrics) {
+                const durationMs = performance.now() - startedAt;
+                this.metrics.recordHealthCheck({
+                  breakerId: this.id,
+                  type,
+                  result: CallResult.FAILURE,
+                  durationMs,
+                });
+              }
 
-          void this.onHealthCheckFailure(type);
-        }
-      },
+              this.handleError(`Failed to perform ${type} health check`, err);
+
+              void this.onHealthCheckFailure(type);
+            } finally {
+              span.end();
+            }
+          },
+        ),
     });
   }
 
@@ -402,7 +439,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
     } catch (err) {
       if (err instanceof CircuitOpenError) {
         // The wait was aborted because the circuit opened
-        this.metrics?.recordBlockedRequest({ breakerId: this.id });
+        this.recordBlockedRequest();
       }
       throw err;
     } finally {
@@ -419,26 +456,51 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
   private throwIfCircuitOpen(): void {
     if (this.state === CircuitState.OPEN) {
-      this.metrics?.recordBlockedRequest({ breakerId: this.id });
+      this.recordBlockedRequest();
 
       throw new CircuitOpenError(this.id);
     }
   }
 
-  private async runCall<T>(fn: () => Promise<T>): Promise<T> {
-    const startedAt = performance.now();
+  private recordBlockedRequest(): void {
+    this.metrics?.recordBlockedRequest({ breakerId: this.id });
+    tracer
+      .startSpan('zenvark.blocked', {
+        kind: SpanKind.CLIENT,
+        attributes: { 'zenvark.breaker.id': this.id },
+      })
+      .setStatus({ code: SpanStatusCode.ERROR })
+      .end();
+  }
 
-    try {
-      const result = await fn();
+  private runCall<T>(fn: () => Promise<T>): Promise<T> {
+    return tracer.startActiveSpan(
+      'zenvark.call',
+      {
+        kind: SpanKind.CLIENT,
+        attributes: { 'zenvark.breaker.id': this.id },
+      },
+      async (span) => {
+        const startedAt = performance.now();
 
-      void this.recordCallResult(CallResult.SUCCESS, startedAt);
+        try {
+          const result = await fn();
 
-      return result;
-    } catch (err) {
-      void this.recordCallResult(CallResult.FAILURE, startedAt);
+          span.setAttribute('zenvark.call.result', CallResult.SUCCESS);
+          void this.recordCallResult(CallResult.SUCCESS, startedAt);
 
-      throw err;
-    }
+          return result;
+        } catch (err) {
+          span.setAttribute('zenvark.call.result', CallResult.FAILURE);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          void this.recordCallResult(CallResult.FAILURE, startedAt);
+
+          throw err;
+        } finally {
+          span.end();
+        }
+      },
+    );
   }
 
   private resolveErrorOutcome(

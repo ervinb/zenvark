@@ -53,6 +53,9 @@
   },
   "devDependencies": {
     "@lokalise/tsconfig": "^5.0.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.12.0",
+    "@opentelemetry/sdk-trace": "^2.12.0",
     "@types/node": "^24.10.1",
     "@vitest/coverage-v8": "^5.0.0",
     "ioredis": "^6.0.0",
@@ -64,6 +67,7 @@
     "redis-semaphore": "^5.8.0"
   },
   "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "ioredis": "^5.0.0 || ^6.0.0"
   }
 }
