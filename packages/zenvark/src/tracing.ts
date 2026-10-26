@@ -1,4 +1,5 @@
 import { trace } from '@opentelemetry/api';
 
-// No-op unless the application registers an OpenTelemetry SDK
-export const tracer = trace.getTracer('zenvark');
+// Looked up per span: a tracer taken at import time stays a no-op if the app
+// registers its SDK later through another copy of @opentelemetry/api
+export const tracer = () => trace.getTracer('zenvark');
