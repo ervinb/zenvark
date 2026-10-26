@@ -1,3 +1,4 @@
+import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Redis } from 'ioredis';
 import type { AdaptiveSemaphore, Lease } from './adaptive-semaphore.ts';
 import type { BackoffStrategy } from './backoffs/backoff-strategy.ts';
@@ -14,6 +15,7 @@ import { CircuitOpenError } from './errors/circuit-open-error.ts';
 import { LeaderElector } from './leader-elector.ts';
 import { CallResultStore } from './stores/call-result-store.ts';
 import { CircuitStateStore } from './stores/circuit-state-store.ts';
+import { tracer } from './tracing.ts';
 import type { CallResultEvent } from './types.ts';
 import { AbstractLifecycleManager } from './utils/abstract-lifecycle-manager.ts';
 import { HealthCheckManager } from './utils/health-check-manager.ts';
@@ -134,6 +136,15 @@ export class CircuitBreaker extends AbstractLifecycleManager {
       onStateChange: (state) => {
         if (this.elector.isLeader) {
           this.metrics?.recordStateChange?.({ breakerId: this.id, state });
+          tracer
+            .startSpan('zenvark.state_change', {
+              root: true,
+              attributes: {
+                'zenvark.breaker.id': this.id,
+                'zenvark.circuit.state': state,
+              },
+            })
+            .end();
         }
         if (state === CircuitState.OPEN) {
           this.abortPendingLeaseAcquires();
@@ -186,10 +197,21 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
     this.healthCheckManager = new HealthCheckManager({
       runCheck: async (type, signal) => {
+        const span = tracer.startSpan('zenvark.healthcheck', {
+          root: true,
+          kind: SpanKind.CLIENT,
+          attributes: {
+            'zenvark.breaker.id': this.id,
+            'zenvark.healthcheck.type': type,
+          },
+        });
         const startedAt = performance.now();
 
         try {
-          await this.health.check(type, signal);
+          await context.with(trace.setSpan(context.active(), span), () =>
+            this.health.check(type, signal),
+          );
+          span.setAttribute('zenvark.healthcheck.result', CallResult.SUCCESS);
 
           if (this.metrics) {
             const durationMs = performance.now() - startedAt;
@@ -207,6 +229,9 @@ export class CircuitBreaker extends AbstractLifecycleManager {
             return;
           }
 
+          span.setAttribute('zenvark.healthcheck.result', CallResult.FAILURE);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+
           if (this.metrics) {
             const durationMs = performance.now() - startedAt;
             this.metrics.recordHealthCheck({
@@ -220,6 +245,8 @@ export class CircuitBreaker extends AbstractLifecycleManager {
           this.handleError(`Failed to perform ${type} health check`, err);
 
           void this.onHealthCheckFailure(type);
+        } finally {
+          span.end();
         }
       },
     });
@@ -427,21 +454,40 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
   private recordBlockedRequest(): void {
     this.metrics?.recordBlockedRequest({ breakerId: this.id });
+    tracer
+      .startSpan('zenvark.blocked', {
+        kind: SpanKind.CLIENT,
+        attributes: { 'zenvark.breaker.id': this.id },
+      })
+      .setStatus({ code: SpanStatusCode.ERROR })
+      .end();
   }
 
   private async runCall<T>(fn: () => Promise<T>): Promise<T> {
+    const span = tracer.startSpan('zenvark.call', {
+      kind: SpanKind.CLIENT,
+      attributes: { 'zenvark.breaker.id': this.id },
+    });
     const startedAt = performance.now();
 
     try {
-      const result = await fn();
+      const result = await context.with(
+        trace.setSpan(context.active(), span),
+        fn,
+      );
 
+      span.setAttribute('zenvark.call.result', CallResult.SUCCESS);
       void this.recordCallResult(CallResult.SUCCESS, startedAt);
 
       return result;
     } catch (err) {
+      span.setAttribute('zenvark.call.result', CallResult.FAILURE);
+      span.setStatus({ code: SpanStatusCode.ERROR });
       void this.recordCallResult(CallResult.FAILURE, startedAt);
 
       throw err;
+    } finally {
+      span.end();
     }
   }
 

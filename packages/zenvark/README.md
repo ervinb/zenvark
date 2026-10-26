@@ -27,6 +27,8 @@ They work independently or combined, with the breaker gating every call through 
 
 Both primitives report through **Prometheus metrics** via [@zenvark/prom](https://www.npmjs.com/package/@zenvark/prom).
 
+The circuit breaker also emits **OpenTelemetry spans** when the application registers an OpenTelemetry SDK. See [Tracing](https://zenvark.github.io/zenvark/docs/guides/metrics#opentelemetry-tracing).
+
 ## Installation
 
 ```bash

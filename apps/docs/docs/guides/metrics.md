@@ -160,6 +160,19 @@ const metrics = new PrometheusBreakerMetrics({
 });
 ```
 
+## OpenTelemetry Tracing
+
+The circuit breaker creates spans through `@opentelemetry/api`. Without a registered SDK they are no-ops. Once the application registers one (for example with `NodeSDK`), the spans are exported with no extra configuration.
+
+| Span                   | Created for                           | Attributes                                                                     | Parent                    |
+| ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------ | ------------------------- |
+| `zenvark.call`         | each `execute` call that runs         | `zenvark.breaker.id`, `zenvark.call.result`                                    | the caller's active span  |
+| `zenvark.blocked`      | each call rejected by an open circuit | `zenvark.breaker.id`                                                           | the caller's active span  |
+| `zenvark.healthcheck`  | each health check attempt             | `zenvark.breaker.id`, `zenvark.healthcheck.type`, `zenvark.healthcheck.result` | none (starts a new trace) |
+| `zenvark.state_change` | each transition, on the leader only   | `zenvark.breaker.id`, `zenvark.circuit.state`                                  | none (starts a new trace) |
+
+`zenvark.call` is the active span while your function runs, so spans it creates, such as outbound HTTP calls and their retries, nest under it. Failed calls, blocked calls and failed health checks have error status.
+
 ## Custom Metrics Implementation
 
 You can implement custom metrics by implementing the `BreakerMetricsRecorder` interface:
