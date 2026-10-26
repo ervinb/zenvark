@@ -136,7 +136,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
       onStateChange: (state) => {
         if (this.elector.isLeader) {
           this.metrics?.recordStateChange?.({ breakerId: this.id, state });
-          tracer
+          tracer()
             .startSpan('zenvark.state_change', {
               root: true,
               attributes: {
@@ -197,7 +197,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
     this.healthCheckManager = new HealthCheckManager({
       runCheck: async (type, signal) => {
-        const span = tracer.startSpan('zenvark.healthcheck', {
+        const span = tracer().startSpan('zenvark.healthcheck', {
           root: true,
           kind: SpanKind.CLIENT,
           attributes: {
@@ -454,7 +454,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
 
   private recordBlockedRequest(): void {
     this.metrics?.recordBlockedRequest({ breakerId: this.id });
-    tracer
+    tracer()
       .startSpan('zenvark.blocked', {
         kind: SpanKind.CLIENT,
         attributes: { 'zenvark.breaker.id': this.id },
@@ -464,7 +464,7 @@ export class CircuitBreaker extends AbstractLifecycleManager {
   }
 
   private async runCall<T>(fn: () => Promise<T>): Promise<T> {
-    const span = tracer.startSpan('zenvark.call', {
+    const span = tracer().startSpan('zenvark.call', {
       kind: SpanKind.CLIENT,
       attributes: { 'zenvark.breaker.id': this.id },
     });
