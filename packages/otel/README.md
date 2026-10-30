@@ -37,7 +37,7 @@ Spans are no-ops until the application registers an OpenTelemetry SDK (for examp
 Zenvark knows what a breaker is called, not what it protects, so its spans carry no peer of their own. Pass `attributes` to add your own to every span, either fixed or resolved from the breaker or semaphore id:
 
 ```typescript
-const HOSTS = {
+const HOSTS: Record<string, string | undefined> = {
   translations: "api.example.com",
   payments: "payments.example.net",
 };
@@ -49,7 +49,7 @@ registerZenvarkTelemetry(
 );
 ```
 
-`zenvark.call`, `zenvark.blocked` and `zenvark.healthcheck` are client spans, which OpenTelemetry's semantic conventions expect to carry `server.address`. Setting it lets a tracing backend attribute the call to the dependency it reaches, across every breaker regardless of the protocol the call itself uses. Zenvark's own `zenvark.*` attributes take precedence, so these cannot overwrite them.
+`zenvark.call`, `zenvark.blocked` and `zenvark.healthcheck` are client spans, which OpenTelemetry's semantic conventions expect to carry `server.address`. Setting it lets a tracing backend attribute the call to the dependency it reaches, across every breaker regardless of the protocol the call itself uses. Zenvark's own `zenvark.*` attributes take precedence, so these cannot overwrite them, and are set first, so a low `attributeCountLimit` drops these rather than the breaker id and the call result.
 
 ## Spans
 

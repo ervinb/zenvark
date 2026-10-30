@@ -301,6 +301,26 @@ describe('ZenvarkOtel', () => {
       });
     });
 
+    it("drops them before zenvark's own under an attribute limit", async () => {
+      const limitedExporter = new InMemorySpanExporter();
+      const limitedProvider = new TracerProvider({
+        spanLimits: { attributeCountLimit: 1 },
+        spanProcessors: [
+          new SimpleSpanProcessor({ exporter: limitedExporter }),
+        ],
+      });
+      const telemetry = new ZenvarkOtel({
+        tracer: limitedProvider.getTracer('limited'),
+        attributes: { 'server.address': 'api.example.com' },
+      });
+
+      await telemetry.executeCall({ breakerId, execute: async () => 'ok' });
+
+      const [call] = limitedExporter.getFinishedSpans();
+      expect(call?.attributes).toEqual({ 'zenvark.breaker.id': breakerId });
+      await limitedProvider.shutdown();
+    });
+
     it("does not let them override zenvark's own attributes", async () => {
       const telemetry = new ZenvarkOtel({
         tracer: testTracer,

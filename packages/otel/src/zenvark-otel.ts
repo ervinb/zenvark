@@ -39,7 +39,9 @@ export type ZenvarkOtelOptions = {
    * });
    * ```
    *
-   * Zenvark's own attributes take precedence over these.
+   * Zenvark's own attributes take precedence over these, and are set
+   * first, so a low `attributeCountLimit` drops these rather than the
+   * breaker id and the call result.
    */
   attributes?: Attributes | ((id: string) => Attributes | undefined);
 };
@@ -71,10 +73,24 @@ export class ZenvarkOtel implements Telemetry {
     return this.tracer ?? trace.getTracer(TRACER_NAME);
   }
 
-  private extraAttributes(id: string): Attributes | undefined {
-    return typeof this.attributes === 'function'
-      ? this.attributes(id)
-      : this.attributes;
+  // Zenvark's own attributes are set first, so a low `attributeCountLimit`
+  // drops the configured extras rather than the breaker id and result
+  private withExtras(id: string, own: Attributes): Attributes {
+    const extra =
+      typeof this.attributes === 'function'
+        ? this.attributes(id)
+        : this.attributes;
+    if (extra === undefined) {
+      return own;
+    }
+
+    const merged: Attributes = { ...own };
+    for (const [key, value] of Object.entries(extra)) {
+      if (!(key in own)) {
+        merged[key] = value;
+      }
+    }
+    return merged;
   }
 
   /**
@@ -87,10 +103,9 @@ export class ZenvarkOtel implements Telemetry {
   }: ExecuteCallParams<T>): Promise<T> {
     const span = this.getTracer().startSpan('zenvark.call', {
       kind: SpanKind.CLIENT,
-      attributes: {
-        ...this.extraAttributes(breakerId),
+      attributes: this.withExtras(breakerId, {
         'zenvark.breaker.id': breakerId,
-      },
+      }),
     });
 
     try {
@@ -122,11 +137,10 @@ export class ZenvarkOtel implements Telemetry {
     const span = this.getTracer().startSpan('zenvark.healthcheck', {
       root: true,
       kind: SpanKind.CLIENT,
-      attributes: {
-        ...this.extraAttributes(breakerId),
+      attributes: this.withExtras(breakerId, {
         'zenvark.breaker.id': breakerId,
         'zenvark.healthcheck.type': type,
-      },
+      }),
     });
 
     try {
@@ -151,10 +165,9 @@ export class ZenvarkOtel implements Telemetry {
     this.getTracer()
       .startSpan('zenvark.blocked', {
         kind: SpanKind.CLIENT,
-        attributes: {
-          ...this.extraAttributes(breakerId),
+        attributes: this.withExtras(breakerId, {
           'zenvark.breaker.id': breakerId,
-        },
+        }),
       })
       .setStatus({ code: SpanStatusCode.ERROR, message: 'Circuit is open' })
       .end();
@@ -167,11 +180,10 @@ export class ZenvarkOtel implements Telemetry {
     this.getTracer()
       .startSpan('zenvark.state_change', {
         root: true,
-        attributes: {
-          ...this.extraAttributes(breakerId),
+        attributes: this.withExtras(breakerId, {
           'zenvark.breaker.id': breakerId,
           'zenvark.circuit.state': state,
-        },
+        }),
       })
       .end();
   }
@@ -190,14 +202,13 @@ export class ZenvarkOtel implements Telemetry {
     const endTime = Date.now();
     const span = this.getTracer().startSpan('zenvark.semaphore.acquire', {
       startTime: endTime - waitMs,
-      attributes: {
-        ...this.extraAttributes(semaphoreId),
+      attributes: this.withExtras(semaphoreId, {
         'zenvark.semaphore.id': semaphoreId,
         'zenvark.semaphore.acquire.result': result,
         ...(className === undefined
           ? {}
           : { 'zenvark.semaphore.class': className }),
-      },
+      }),
     });
     if (result === AcquireResult.TIMEOUT) {
       span.setStatus({
