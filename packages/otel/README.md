@@ -32,6 +32,25 @@ new CircuitBreaker({
 
 Spans are no-ops until the application registers an OpenTelemetry SDK (for example with `NodeSDK`). By default spans are created with the `zenvark` tracer of the global tracer provider; pass `{ tracer }` to use a specific one.
 
+## Describing what a breaker protects
+
+Zenvark knows what a breaker is called, not what it protects, so its spans carry no peer of their own. Pass `attributes` to add your own to every span, either fixed or resolved from the breaker or semaphore id:
+
+```typescript
+const HOSTS = {
+  translations: "api.example.com",
+  payments: "payments.example.net",
+};
+
+registerZenvarkTelemetry(
+  new ZenvarkOtel({
+    attributes: (id) => ({ "server.address": HOSTS[id] }),
+  }),
+);
+```
+
+`zenvark.call`, `zenvark.blocked` and `zenvark.healthcheck` are client spans, which OpenTelemetry's semantic conventions expect to carry `server.address`. Setting it lets a tracing backend attribute the call to the dependency it reaches, across every breaker regardless of the protocol the call itself uses. Zenvark's own `zenvark.*` attributes take precedence, so these cannot overwrite them.
+
 ## Spans
 
 | Span                        | Created for                               | Attributes                                                                            | Parent                    |
